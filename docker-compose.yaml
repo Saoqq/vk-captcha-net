@@ -15,6 +15,7 @@ services:
             - driver: nvidia
               capabilities: [ gpu ]
   serving:
+    # Do not change until: https://github.com/tensorflow/serving/issues/2048
     image: tensorflow/serving:2.8.2
     restart: on-failure
     ports:
