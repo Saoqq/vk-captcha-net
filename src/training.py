@@ -1,26 +1,12 @@
-import os
 import numpy as np
 import matplotlib.pyplot as plt
 import tensorflow as tf
 from functools import partial
 from albumentations import Compose, OneOf, MotionBlur, MedianBlur, Blur, Downscale, RGBShift, \
     GaussNoise, ShiftScaleRotate, OpticalDistortion, GridDistortion, Sharpen, Emboss, ImageCompression
-from pathlib import Path
 from tensorflow import keras
-from keras import layers
-from model import build_model, decode_ctc
-
-# Path to the images directory
-data_dir = Path("../train/")
-
-# Get list of all the images
-images = sorted(list(map(str, list(data_dir.glob("*.jpg")))))
-labels = [img.split(os.path.sep)[-1].split(".jpg")[0] for img in images]
-characters = set(char for label in labels for char in label)
-characters = sorted(list(characters))
-
-# Maximum length of any captcha in the dataset
-max_length = max([len(label) for label in labels])
+from model import build_model, decode_ctc, cast_to_inference
+from util import *
 
 labels = [item.ljust(max_length) for item in labels]
 
@@ -28,21 +14,6 @@ print("Number of images found: ", len(images))
 print("Number of labels found: ", len(labels))
 print("Number of unique characters: ", len(characters))
 print("Characters present: ", characters)
-
-# Batch size for training and validation
-batch_size = 16
-# Desired image dimensions
-# FIXME: probably won't work on other sizes, need to adjust model construction
-img_width = 128
-img_height = 64
-
-# Mapping characters to integers
-char_to_num = layers.StringLookup(vocabulary=list(characters), mask_token=None)
-
-# Mapping integers back to original characters
-num_to_char = layers.StringLookup(
-    vocabulary=char_to_num.get_vocabulary(), mask_token=None, invert=True
-)
 
 
 def split_data(images, labels, train_size=0.9, shuffle=True):
@@ -163,7 +134,7 @@ plt.show()
 model = build_model(img_width, img_height, batch_size, max_length, len(char_to_num.get_vocabulary()))
 model.summary()
 
-epochs = 100
+epochs = 1
 early_stopping_patience = 10
 # Add early stopping
 early_stopping = keras.callbacks.EarlyStopping(
@@ -179,17 +150,15 @@ history = model.fit(
 )
 model.save("../.data/training/vk_captcha_net")
 # Get the prediction model by extracting layers till the output layer
-prediction_model = keras.models.Model(
-    model.get_layer(name="image").input, model.get_layer(name="dense2").output
-)
+prediction_model = cast_to_inference(model)
 prediction_model.summary()
 
 
 # Decode predictions after inference, no CTC layer, output becomes non-decoded
 def decode_batch_predictions(pred):
-    input_len = np.ones(pred.shape[0]) * (pred.shape[1])
+    # input_len = np.ones(pred.shape[0]) * (pred.shape[1])
     # Use greedy search. For complex tasks, you can use beam search
-    results = decode_ctc(max_length, input_len, pred)
+    results = pred
 
     output_text = []
     for res in results:

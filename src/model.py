@@ -1,4 +1,3 @@
-import numpy as np
 import tensorflow as tf
 from tensorflow.python.keras import layers
 from tensorflow import keras
@@ -6,10 +5,7 @@ from keras import layers
 
 
 def decode_ctc(max_length, input_length, y_pred):
-    return keras.backend.ctc_decode(
-        y_pred,
-        input_length=input_length,
-        greedy=True)[0][0][:, :max_length]
+    return keras.backend.ctc_decode(y_pred, input_length)[0][0][:, :max_length]
 
 
 class CTCLayer(layers.Layer):
@@ -17,30 +13,35 @@ class CTCLayer(layers.Layer):
         super().__init__(name=name)
         self.batch_size = batch_size
         self.max_length = max_length
-        self.loss_fn = keras.backend.ctc_batch_cost
+        self.loss_fn = tf.keras.backend.ctc_batch_cost
 
     def call(self, y_true, y_pred):
         # Compute the training-time loss value and add it
         # to the layer using `self.add_loss()`
-        batch_len = tf.cast(tf.shape(y_true)[0], dtype="int64")
-        input_length_1 = tf.cast(tf.shape(y_pred)[1], dtype="int64")
+        batch_len = tf.cast(tf.shape(y_pred)[0], dtype="int64")
+        input_length = tf.cast(tf.shape(y_pred)[1], dtype="int64")
 
-        input_length = input_length_1 * tf.ones(shape=(batch_len, 1), dtype="int64")
+        input_length = input_length * tf.ones(shape=(batch_len, 1), dtype="int64")
         label_length = tf.math.count_nonzero(y_true, 1, keepdims=True)
 
         loss = self.loss_fn(y_true, y_pred, input_length, label_length)
         self.add_loss(loss)
-
-        # decoding during training to get categorical_accuracy metric
-        # however it requires constant and always filled batches
-
-        # in case acc metric not required this can be just:
-        # return y_pred
-        # and there will be no need passing y_true into model.fit
-        return decode_ctc(self.max_length, np.ones(self.batch_size) * input_length_1, y_pred)
+        return y_pred
 
 
-def build_model(img_width, img_height, batch_size, max_length, num_classes):
+def CTCDecoder(max_length, name='ctc_decoder'):
+    def decoder(y_pred):
+        batch_size = tf.cast(tf.shape(y_pred)[0], dtype="int64")
+        input_length = tf.cast(tf.shape(y_pred)[1], dtype="int64")
+        decoded = keras.backend.ctc_decode(
+            y_pred, input_length * tf.ones(shape=batch_size, dtype="int64")
+        )[0][0][:, :max_length]
+        return decoded
+
+    return tf.keras.layers.Lambda(decoder, name=name)
+
+
+def build_model(img_width, img_height, batch_size, max_length, num_classes, training=True):
     def conv_module(layer, K, kX, kY, stride=(1, 1), chan_dim=-1, padding='same'):
         '''Inception Conv Layer
         Args:
@@ -158,16 +159,29 @@ def build_model(img_width, img_height, batch_size, max_length, num_classes):
     # Removing 1 and -1 time features as usually captcha images don't have anything at the start and in the end of image
     # That should result in better handling of short captcha: 3-5 symbols centered in the middle
     # BUT negatively affects on long captcha: 5-7 symbols spread across all image
-    x = layers.Cropping1D(cropping=1)(x)
+    x = layers.Cropping1D(cropping=1, name="cropping")(x)
 
     # Add CTC layer for calculating CTC loss at each step
     # This layer removed for inference
-    output = CTCLayer(batch_size, max_length, name="ctc_loss")(labels, x)
+    if training:
+        x = CTCLayer(batch_size, max_length, name="ctc_loss")(labels, x)
+        output = CTCDecoder(max_length, name="ctc_decoder")(x)
+    else:
+        output = CTCDecoder(max_length, name="ctc_decoder")(x)
 
     # Define the model
     model = keras.models.Model(inputs=[input_img, labels], outputs=output, name="vk_captcha")
     # Optimizer
     opt = keras.optimizers.Adam()
     # Compile the model and return
-    model.compile(optimizer=opt, metrics=['categorical_accuracy'])
+    model.compile(optimizer=opt,
+                  metrics=['categorical_accuracy']
+                  )
     return model
+
+
+def cast_to_inference(model):
+    x = model.get_layer(name="cropping").output
+    x = model.get_layer(name="ctc_decoder")(x)
+    prediction_model = keras.models.Model(model.get_layer(name="image").input, x)
+    return prediction_model
